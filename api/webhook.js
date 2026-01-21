@@ -1,4 +1,6 @@
-const bot = require('../src/index');
+const bot = require('../src/bot');
+const commands = require('../src/commands/index');
+const connectDB = require('../src/db');
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
@@ -6,11 +8,16 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // 🔥 DO NOT reconnect DB here
-    await bot.processUpdate(req.body);
-    return res.status(200).send('OK');
-  } catch (error) {
-    console.error('❌ Webhook error:', error);
-    return res.status(500).send('Webhook error');
+    await connectDB();
+
+    const update = req.body;
+
+    // 🔥 THIS IS THE KEY YOU WERE MISSING
+    await bot.processUpdate(update);
+
+    res.status(200).send('OK');
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.status(500).send('Error');
   }
 };

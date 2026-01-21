@@ -1,4 +1,3 @@
-const connectDB = require('../src/db');
 const bot = require('../src/index');
 
 module.exports = async (req, res) => {
@@ -7,7 +6,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    await connectDB(); // ✅ SAFE, cached connection
+    // 🔥 DO NOT reconnect DB here
     await bot.processUpdate(req.body);
     return res.status(200).send('OK');
   } catch (error) {

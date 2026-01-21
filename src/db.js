@@ -2,17 +2,19 @@ const mongoose = require('mongoose');
 
 let isConnected = false;
 
-module.exports = async function connectDB() {
+const connectDB = async () => {
   if (isConnected) return;
 
-  if (!process.env.MONGO_URI) {
-    throw new Error('❌ MONGO_URI not set');
+  try {
+    await mongoose.connect(process.env.MONGO_URI, {
+      bufferCommands: false
+    });
+    isConnected = true;
+    console.log('✅ MongoDB connected');
+  } catch (err) {
+    console.error('❌ MongoDB connection error:', err);
+    throw err;
   }
-
-  await mongoose.connect(process.env.MONGO_URI, {
-    bufferCommands: false,
-  });
-
-  isConnected = true;
-  console.log('✅ MongoDB connected');
 };
+
+module.exports = connectDB;

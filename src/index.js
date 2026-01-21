@@ -3,28 +3,36 @@ const TelegramBot = require('node-telegram-bot-api');
 const connectDB = require('./db');
 const commands = require('./commands');
 
+// Connect MongoDB (safe on cold start)
 connectDB();
 
 const token = process.env.BOT_TOKEN;
-const url = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : process.env.URL;
-let bot;
 
-if (process.env.NODE_ENV === 'production') {
-  // Webhook Mode (Vercel)
-  bot = new TelegramBot(token, { webHook: true });
-  // Only set webhook if URL is available (prevents errors during build)
-  if (url) {
-    bot.setWebHook(`${url}/api/webhook`);
-  }
-} else {
-  // Polling Mode (Local Dev)
-  bot = new TelegramBot(token, { polling: true });
-  console.log('🤖 NekoWeb3PJ Polling Mode');
+if (!token) {
+  throw new Error('❌ BOT_TOKEN is missing in environment variables');
 }
 
-bot.on('message', async (msg) => {
-  if (msg.from.username !== process.env.ALLOWED_USERNAME) return;
-  await commands(bot, msg);
+// ✅ Create bot in webhook mode ONLY
+const bot = new TelegramBot(token, {
+  webHook: true
 });
 
-module.exports = bot; // Export for Vercel API handler
+// Handle incoming messages
+bot.on('message', async (msg) => {
+  try {
+    // Optional username restriction
+    if (
+      process.env.ALLOWED_USERNAME &&
+      msg.from.username !== process.env.ALLOWED_USERNAME
+    ) {
+      return;
+    }
+
+    await commands(bot, msg);
+  } catch (err) {
+    console.error('Bot message error:', err);
+  }
+});
+
+// ✅ Export bot for Vercel webhook handler
+module.exports = bot;

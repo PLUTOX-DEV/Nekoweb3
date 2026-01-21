@@ -23,17 +23,31 @@ const timeAgo = (date) => {
   return `${Math.floor(h / 24)}d ago`;
 };
 
+const safeSend = (text) =>
+  text.length > 3900 ? text.slice(0, 3900) + '\n\n…truncated' : text;
+
+const safeCount = async (query) => {
+  try {
+    return await Project.countDocuments(query);
+  } catch {
+    return 0;
+  }
+};
+
 /* =========================
    AI SCORING SYSTEM
 ========================= */
 
 const alphaScore = (p) => {
+  if (p.riskScore === 'HIGH') return 0;
+
+  const age = Number(p.pairAgeHours) || 0;
   let score = 0;
 
   // Age (25)
-  if (p.pairAgeHours < 1) score += 25;
-  else if (p.pairAgeHours < 6) score += 20;
-  else if (p.pairAgeHours < 24) score += 10;
+  if (age < 1) score += 25;
+  else if (age < 6) score += 20;
+  else if (age < 24) score += 10;
 
   // Liquidity (25)
   if (p.liquidity > 100000) score += 25;
@@ -51,7 +65,13 @@ const alphaScore = (p) => {
   // Category (10)
   if (['meme', 'defi'].includes(p.category)) score += 10;
 
-  return Math.min(score, 100);
+  // Social bonus
+  if (p.telegram && p.twitter) score += 5;
+
+  // FDV sanity check
+  if (p.marketCap > 50_000_000) score -= 15;
+
+  return Math.max(0, Math.min(score, 100));
 };
 
 const moderatorScore = (p) => {
@@ -68,9 +88,9 @@ const moderatorScore = (p) => {
 ========================= */
 
 const generateAIStrategy = async () => {
-  const fresh = await Project.countDocuments({ pairAgeHours: { $lt: 6 } });
-  const lowRisk = await Project.countDocuments({ riskScore: 'LOW' });
-  const memes = await Project.countDocuments({ category: 'meme' });
+  const fresh = await safeCount({ pairAgeHours: { $lt: 6 } });
+  const lowRisk = await safeCount({ riskScore: 'LOW' });
+  const memes = await safeCount({ category: 'meme' });
 
   let phase = 'BALANCED';
   if (fresh > 8) phase = 'EARLY LAUNCH META 🚀';
@@ -83,8 +103,7 @@ const generateAIStrategy = async () => {
     `• Fresh pairs (<6h): ${fresh}\n` +
     `• Low-risk projects: ${lowRisk}\n` +
     `• Meme dominance: ${memes}\n\n` +
-    `🧭 *Market Phase*\n` +
-    `→ *${phase}*\n\n` +
+    `🧭 *Market Phase*\n→ *${phase}*\n\n` +
     `🎯 *AI Recommendations*\n` +
     `1️⃣ AlphaScore ≥ 70 only\n` +
     `2️⃣ Liquidity > $20k\n` +
@@ -121,7 +140,7 @@ module.exports = async (bot, msg) => {
         `/chain eth|sol|bnb\n` +
         `/category meme|defi|utility|gaming\n` +
         `/moderator\n` +
-        `/strategy\n`,
+        `/strategy`,
         { parse_mode: 'Markdown' }
       );
     }
@@ -147,7 +166,7 @@ module.exports = async (bot, msg) => {
         );
       }
 
-      const projects = await Project.find()
+      const projects = await Project.find({ chain })
         .sort({ createdAt: -1 })
         .skip((page - 1) * PROJECTS_PER_PAGE)
         .limit(PROJECTS_PER_PAGE);
@@ -159,12 +178,18 @@ module.exports = async (bot, msg) => {
 
       const ui = projects.map(p => {
         const score = alphaScore(p);
+        const verdict =
+          score >= 80 ? '🟢 STRONG ALPHA' :
+          score >= 60 ? '🟡 WATCH' :
+          '🔴 AVOID';
+
         return (
           `━━━━━━━━━━━━━━\n` +
           `🦁 *${p.name}* ($${p.symbol})\n` +
           `⛓️ ${p.chain.toUpperCase()} | ${p.category.toUpperCase()}\n` +
-          `⏱️ ${Math.floor(p.pairAgeHours)}h — ${formatAge(p.pairAgeHours)}\n` +
+          `⏱️ ${Math.floor(p.pairAgeHours || 0)}h — ${formatAge(p.pairAgeHours)}\n` +
           `🧠 *AlphaScore:* ${score}/100\n` +
+          `📌 *Verdict:* ${verdict}\n` +
           `💧 Liquidity: $${p.liquidity.toLocaleString()}\n` +
           `📊 Volume: $${p.volume24h.toLocaleString()}\n` +
           `🔗 [DexScreener](https://dexscreener.com/${p.chain}/${p.address})`
@@ -173,7 +198,7 @@ module.exports = async (bot, msg) => {
 
       return bot.sendMessage(
         chatId,
-        `📡 *Latest Projects* | Page ${page}\n\n${ui}`,
+        safeSend(`📡 *Latest Projects* | Page ${page}\n\n${ui}`),
         { parse_mode: 'Markdown', disable_web_page_preview: true }
       );
     }
@@ -181,9 +206,11 @@ module.exports = async (bot, msg) => {
     /* MODERATOR */
     if (command === '/moderator') {
       const projects = await Project.find({
-        telegram: { $ne: '' },
+        telegram: { $regex: /^https:\/\/t\.me\// },
         riskScore: { $ne: 'HIGH' }
-      }).sort({ pairAgeHours: 1 }).limit(3);
+      })
+        .sort({ pairAgeHours: 1 })
+        .limit(3);
 
       if (!projects.length) {
         return bot.sendMessage(chatId, 'No early mod opportunities right now.');
@@ -208,7 +235,7 @@ module.exports = async (bot, msg) => {
     }
 
   } catch (err) {
-    console.error(err);
+    console.error('COMMAND ERROR:', err);
     return bot.sendMessage(msg.chat.id, '⚠️ Internal error.');
   }
 };

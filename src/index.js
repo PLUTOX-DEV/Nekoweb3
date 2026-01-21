@@ -1,10 +1,6 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const connectDB = require('./db');
 const commands = require('./commands');
-
-// Connect MongoDB (safe on cold start)
-connectDB();
 
 const token = process.env.BOT_TOKEN;
 
@@ -12,12 +8,12 @@ if (!token) {
   throw new Error('❌ BOT_TOKEN is missing in environment variables');
 }
 
-// ✅ Create bot in webhook mode ONLY
+// ✅ Webhook-only bot (NO polling, NO DB here)
 const bot = new TelegramBot(token, {
-  webHook: true
+  webHook: true,
 });
 
-// Handle incoming messages
+// Handle incoming Telegram messages
 bot.on('message', async (msg) => {
   try {
     // Optional username restriction
@@ -34,5 +30,5 @@ bot.on('message', async (msg) => {
   }
 });
 
-// ✅ Export bot for Vercel webhook handler
 module.exports = bot;
+

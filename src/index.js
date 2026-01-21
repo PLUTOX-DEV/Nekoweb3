@@ -4,7 +4,7 @@ const connectDB = require('./db');
 const commands = require('./commands');
 
 // ✅ connect once
-connectDB();
+connectDB().catch(err => console.error('DB Connection Error:', err));
 
 const token = process.env.BOT_TOKEN;
 if (!token) throw new Error('BOT_TOKEN missing');

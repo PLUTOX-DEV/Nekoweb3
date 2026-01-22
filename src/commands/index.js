@@ -1,7 +1,7 @@
 const Project = require('../models/Project');
-const { fetchNewProjects } = require('../models/web3');
+const { fetchNewProjects, fetchTrendingCoins, fetchCoinPrice, detectCategory } = require('../models/web3');
 
-const PROJECTS_PER_PAGE = 3;
+const PROJECTS_PER_PAGE = 20;
 const userPage = {}; // Vercel-safe pagination
 
 /* =========================
@@ -136,10 +136,17 @@ module.exports = async (bot, msg) => {
       return bot.sendMessage(
         chatId,
         `🤖 *Commands*\n\n` +
-        `/newprojects [eth|sol|bnb]\n` +
-        `/chain eth|sol|bnb\n` +
+        `/newprojects [eth|sol|bnb|ton|sui|avax|monad|base|arb|op]\n` +
+        `/chain eth|sol|bnb|ton|sui|avax|monad|base|arb|op\n` +
         `/category meme|defi|utility|gaming\n` +
+        `/top [number]\n` +
+        `/search <name>\n` +
+        `/price <symbol>\n` +
+        `/trending\n` +
+        `/refresh\n` +
+        `/stats\n` +
         `/moderator\n` +
+        `/alert\n` +
         `/strategy`,
         { parse_mode: 'Markdown' }
       );
@@ -148,25 +155,31 @@ module.exports = async (bot, msg) => {
     /* NEW PROJECTS */
     if (command === '/newprojects') {
       bot.sendChatAction(chatId, 'typing');
-      const chain = arg || 'eth';
+      const chainArg = arg || 'all';
+      const chainMap = { eth: 'ethereum', sol: 'solana', bnb: 'bsc', ton: 'ton', sui: 'sui', avax: 'avalanche', monad: 'monad', base: 'base', arb: 'arbitrum', op: 'optimism', all: 'all' };
+      const chain = chainMap[chainArg] || chainArg;
+      const searchQuery = chainArg === 'all' ? 'ethereum' : (chainMap[chainArg] || chainArg); // Default fetch for all
 
       userPage[chatId] = (userPage[chatId] || 0) + 1;
       const page = userPage[chatId];
 
-      const live = await fetchNewProjects(chain);
-      if (live.length) {
-        await Project.bulkWrite(
-          live.map(p => ({
-            updateOne: {
-              filter: { address: p.address },
-              update: { $setOnInsert: p },
-              upsert: true
-            }
-          }))
-        );
+      if (chainArg !== 'all') {
+        const live = await fetchNewProjects(searchQuery);
+        if (live.length) {
+          await Project.bulkWrite(
+            live.map(p => ({
+              updateOne: {
+                filter: { address: p.address },
+                update: { $setOnInsert: p },
+                upsert: true
+              }
+            }))
+          );
+        }
       }
 
-      const projects = await Project.find({ chain })
+      const query = chain === 'all' ? {} : { chain };
+      const projects = await Project.find(query)
         .sort({ createdAt: -1 })
         .skip((page - 1) * PROJECTS_PER_PAGE)
         .limit(PROJECTS_PER_PAGE);
@@ -183,6 +196,13 @@ module.exports = async (bot, msg) => {
           score >= 60 ? '🟡 WATCH' :
           '🔴 AVOID';
 
+        const link = p.source === 'pump.fun' ? `https://pump.fun/coin/${p.address}` : `https://dexscreener.com/${p.chain}/${p.address}`;
+
+        let extraLinks = '';
+        if (p.telegram) extraLinks += ` | 📣 [TG](${p.telegram})`;
+        if (p.twitter) extraLinks += ` | 🐦 [TW](${p.twitter})`;
+        if (p.website) extraLinks += ` | 🌐 [Web](${p.website})`;
+
         return (
           `━━━━━━━━━━━━━━\n` +
           `🦁 *${p.name}* ($${p.symbol})\n` +
@@ -192,7 +212,8 @@ module.exports = async (bot, msg) => {
           `📌 *Verdict:* ${verdict}\n` +
           `💧 Liquidity: $${p.liquidity.toLocaleString()}\n` +
           `📊 Volume: $${p.volume24h.toLocaleString()}\n` +
-          `🔗 [DexScreener](https://dexscreener.com/${p.chain}/${p.address})`
+          `💰 MC: $${p.marketCap.toLocaleString()}\n` +
+          `🔗 [View](${link})${extraLinks}`
         );
       }).join('\n\n');
 
@@ -226,6 +247,317 @@ module.exports = async (bot, msg) => {
       ).join('\n\n━━━━━━━━━━━━━━\n\n');
 
       return bot.sendMessage(chatId, ui, { parse_mode: 'Markdown' });
+    }
+
+    /* CHAIN */
+    if (command === '/chain') {
+      bot.sendChatAction(chatId, 'typing');
+      const chainArg = arg;
+      if (!chainArg) return bot.sendMessage(chatId, 'Usage: /chain eth|sol|bnb|ton|sui|avax|monad|base|arb|op');
+      const chainMap = { eth: 'ethereum', sol: 'solana', bnb: 'bsc', ton: 'ton', sui: 'sui', avax: 'avalanche', monad: 'monad', base: 'base', arb: 'arbitrum', op: 'optimism' };
+      const chain = chainMap[chainArg] || chainArg;
+
+      userPage[chatId] = (userPage[chatId] || 0) + 1;
+      const page = userPage[chatId];
+
+      const projects = await Project.find({ chain })
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * PROJECTS_PER_PAGE)
+        .limit(PROJECTS_PER_PAGE);
+
+      if (!projects.length) {
+        userPage[chatId] = 0;
+        return bot.sendMessage(chatId, `❌ No projects found for ${chainArg.toUpperCase()}.`);
+      }
+
+      const ui = projects.map(p => {
+        const score = alphaScore(p);
+        const verdict =
+          score >= 80 ? '🟢 STRONG ALPHA' :
+          score >= 60 ? '🟡 WATCH' :
+          '🔴 AVOID';
+
+        const link = p.source === 'pump.fun' ? `https://pump.fun/coin/${p.address}` : `https://dexscreener.com/${p.chain}/${p.address}`;
+
+        let extraLinks = '';
+        if (p.telegram) extraLinks += ` | 📣 [TG](${p.telegram})`;
+        if (p.twitter) extraLinks += ` | 🐦 [TW](${p.twitter})`;
+        if (p.website) extraLinks += ` | 🌐 [Web](${p.website})`;
+
+        return (
+          `━━━━━━━━━━━━━━\n` +
+          `🦁 *${p.name}* ($${p.symbol})\n` +
+          `⛓️ ${p.chain.toUpperCase()} | ${p.category.toUpperCase()}\n` +
+          `⏱️ ${Math.floor(p.pairAgeHours || 0)}h — ${formatAge(p.pairAgeHours)}\n` +
+          `🧠 *AlphaScore:* ${score}/100\n` +
+          `📌 *Verdict:* ${verdict}\n` +
+          `💧 Liquidity: $${p.liquidity.toLocaleString()}\n` +
+          `📊 Volume: $${p.volume24h.toLocaleString()}\n` +
+          `💰 MC: $${p.marketCap.toLocaleString()}\n` +
+          `🔗 [View](${link})${extraLinks}`
+        );
+      }).join('\n\n');
+
+      return bot.sendMessage(
+        chatId,
+        safeSend(`📡 *${chainArg.toUpperCase()} Projects* | Page ${page}\n\n${ui}`),
+        { parse_mode: 'Markdown', disable_web_page_preview: true }
+      );
+    }
+
+    /* CATEGORY */
+    if (command === '/category') {
+      bot.sendChatAction(chatId, 'typing');
+      const category = arg;
+      if (!category) return bot.sendMessage(chatId, 'Usage: /category meme|defi|utility|gaming');
+
+      userPage[chatId] = (userPage[chatId] || 0) + 1;
+      const page = userPage[chatId];
+
+      let projects = [];
+
+      if (category === 'meme') {
+        // For memes, fetch trending coins and filter
+        const trending = await fetchTrendingCoins();
+        projects = trending.filter(coin => detectCategory({ baseToken: { name: coin.name, symbol: coin.symbol } }) === 'meme')
+          .slice((page - 1) * PROJECTS_PER_PAGE, page * PROJECTS_PER_PAGE)
+          .map(coin => ({
+            name: coin.name,
+            symbol: coin.symbol,
+            address: coin.coingeckoId,
+            chain: 'multi',
+            category: 'meme',
+            liquidity: 0,
+            volume24h: 0,
+            marketCap: coin.marketCap || 0,
+            pairAgeHours: 0,
+            website: '',
+            telegram: '',
+            twitter: '',
+            riskScore: 'UNKNOWN',
+            riskReasons: [],
+            source: 'coingecko',
+            createdAt: new Date()
+          }));
+      } else {
+        // For other categories, query DB
+        projects = await Project.find({ category })
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * PROJECTS_PER_PAGE)
+          .limit(PROJECTS_PER_PAGE);
+      }
+
+      if (!projects.length) {
+        userPage[chatId] = 0;
+        return bot.sendMessage(chatId, `❌ No projects found in ${category} category.`);
+      }
+
+      const ui = projects.map(p => {
+        const score = alphaScore(p);
+        const verdict =
+          score >= 80 ? '🟢 STRONG ALPHA' :
+          score >= 60 ? '🟡 WATCH' :
+          '🔴 AVOID';
+
+        const link = p.source === 'pump.fun' ? `https://pump.fun/coin/${p.address}` :
+                     p.source === 'coingecko' ? `https://www.coingecko.com/en/coins/${p.address}` :
+                     `https://dexscreener.com/${p.chain}/${p.address}`;
+
+        let extraLinks = '';
+        if (p.telegram) extraLinks += ` | 📣 [TG](${p.telegram})`;
+        if (p.twitter) extraLinks += ` | 🐦 [TW](${p.twitter})`;
+        if (p.website) extraLinks += ` | 🌐 [Web](${p.website})`;
+
+        return (
+          `━━━━━━━━━━━━━━\n` +
+          `🦁 *${p.name}* ($${p.symbol})\n` +
+          `⛓️ ${p.chain.toUpperCase()} | ${p.category.toUpperCase()}\n` +
+          `⏱️ ${Math.floor(p.pairAgeHours || 0)}h — ${formatAge(p.pairAgeHours)}\n` +
+          `🧠 *AlphaScore:* ${score}/100\n` +
+          `📌 *Verdict:* ${verdict}\n` +
+          `💧 Liquidity: $${p.liquidity.toLocaleString()}\n` +
+          `📊 Volume: $${p.volume24h.toLocaleString()}\n` +
+          `💰 MC: $${p.marketCap.toLocaleString()}\n` +
+          `🔗 [View](${link})${extraLinks}`
+        );
+      }).join('\n\n');
+
+      return bot.sendMessage(
+        chatId,
+        safeSend(`📡 *${category.toUpperCase()} Projects* | Page ${page}\n\n${ui}`),
+        { parse_mode: 'Markdown', disable_web_page_preview: true }
+      );
+    }
+
+    /* TOP */
+    if (command === '/top') {
+      bot.sendChatAction(chatId, 'typing');
+      const limit = Math.min(parseInt(arg) || 5, 10); // Max 10 for performance
+
+      // Fetch recent projects to calculate scores
+      const projects = await Project.find({})
+        .sort({ createdAt: -1 })
+        .limit(100); // Fetch more to sort by score
+
+      if (!projects.length) {
+        return bot.sendMessage(chatId, '❌ No projects found.');
+      }
+
+      // Calculate scores and sort
+      const scored = projects.map(p => ({ ...p.toObject(), score: alphaScore(p) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+
+      const ui = scored.map(p => {
+        const link = p.source === 'pump.fun' ? `https://pump.fun/coin/${p.address}` : `https://dexscreener.com/${p.chain}/${p.address}`;
+        let extraLinks = '';
+        if (p.telegram) extraLinks += ` | 📣 [TG](${p.telegram})`;
+        if (p.twitter) extraLinks += ` | 🐦 [TW](${p.twitter})`;
+        if (p.website) extraLinks += ` | 🌐 [Web](${p.website})`;
+        return (
+          `🏆 *${p.name}* ($${p.symbol})\n` +
+          `⛓️ ${p.chain.toUpperCase()} | ${p.category.toUpperCase()}\n` +
+          `🧠 AlphaScore: ${p.score}/100\n` +
+          `💰 MC: $${p.marketCap.toLocaleString()}\n` +
+          `🔗 [View](${link})${extraLinks}`
+        );
+      }).join('\n\n');
+
+      return bot.sendMessage(chatId, `🥇 *Top ${limit} Projects by AlphaScore*\n\n${ui}`, { parse_mode: 'Markdown', disable_web_page_preview: true });
+    }
+
+    /* SEARCH */
+    if (command === '/search') {
+      if (!arg) return bot.sendMessage(chatId, 'Usage: /search <project name>');
+      bot.sendChatAction(chatId, 'typing');
+
+      const projects = await Project.find({ name: { $regex: arg, $options: 'i' } }).limit(5);
+
+      if (!projects.length) {
+        return bot.sendMessage(chatId, `❌ No projects found matching "${arg}".`);
+      }
+
+      const ui = projects.map(p => {
+        const score = alphaScore(p);
+        const link = p.source === 'pump.fun' ? `https://pump.fun/coin/${p.address}` : `https://dexscreener.com/${p.chain}/${p.address}`;
+        let extraLinks = '';
+        if (p.telegram) extraLinks += ` | 📣 [TG](${p.telegram})`;
+        if (p.twitter) extraLinks += ` | 🐦 [TW](${p.twitter})`;
+        if (p.website) extraLinks += ` | 🌐 [Web](${p.website})`;
+        return (
+          `🔍 *${p.name}* ($${p.symbol})\n` +
+          `⛓️ ${p.chain.toUpperCase()} | Score: ${score}/100\n` +
+          `💰 MC: $${p.marketCap.toLocaleString()}\n` +
+          `🔗 [View](${link})${extraLinks}`
+        );
+      }).join('\n\n');
+
+      return bot.sendMessage(chatId, `🔍 *Search Results for "${arg}"*\n\n${ui}`, { parse_mode: 'Markdown' });
+    }
+
+    /* STATS */
+    if (command === '/stats') {
+      bot.sendChatAction(chatId, 'typing');
+
+      const total = await safeCount({});
+      const eth = await safeCount({ chain: 'ethereum' });
+      const sol = await safeCount({ chain: 'solana' });
+      const bnb = await safeCount({ chain: 'bsc' });
+      const ton = await safeCount({ chain: 'ton' });
+      const sui = await safeCount({ chain: 'sui' });
+      const avax = await safeCount({ chain: 'avalanche' });
+      const monad = await safeCount({ chain: 'monad' });
+      const base = await safeCount({ chain: 'base' });
+      const arb = await safeCount({ chain: 'arbitrum' });
+      const op = await safeCount({ chain: 'optimism' });
+      const memes = await safeCount({ category: 'meme' });
+      const defi = await safeCount({ category: 'defi' });
+
+      return bot.sendMessage(
+        chatId,
+        `📊 *Market Stats*\n\n` +
+        `📈 Total Projects: ${total}\n` +
+        `⛓️ ETH: ${eth} | SOL: ${sol} | BSC: ${bnb}\n` +
+        `⛓️ TON: ${ton} | SUI: ${sui} | AVAX: ${avax}\n` +
+        `⛓️ MONAD: ${monad} | BASE: ${base} | ARB: ${arb} | OP: ${op}\n` +
+        `🏷️ Memes: ${memes} | DeFi: ${defi}\n\n` +
+        `_Data from DexScreener & CoinGecko_`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    /* REFRESH */
+    if (command === '/refresh') {
+      bot.sendChatAction(chatId, 'typing');
+      const chains = ['ethereum', 'solana', 'bsc', 'ton', 'sui', 'avalanche', 'monad', 'base', 'arbitrum', 'optimism'];
+      let totalFetched = 0;
+
+      for (const chain of chains) {
+        const live = await fetchNewProjects(chain);
+        if (live.length) {
+          await Project.bulkWrite(
+            live.map(p => ({
+              updateOne: {
+                filter: { address: p.address },
+                update: { $setOnInsert: p },
+                upsert: true
+              }
+            }))
+          );
+          totalFetched += live.length;
+        }
+      }
+
+      return bot.sendMessage(chatId, `🔄 Refreshed data! Fetched ${totalFetched} new projects across all chains.`);
+    }
+
+    /* PRICE */
+    if (command === '/price') {
+      if (!arg) return bot.sendMessage(chatId, 'Usage: /price <coin_symbol_or_id>');
+      bot.sendChatAction(chatId, 'typing');
+
+      const priceData = await fetchCoinPrice(arg.toLowerCase());
+      if (!priceData) {
+        return bot.sendMessage(chatId, `❌ Could not find price data for "${arg}". Try using the coin ID from CoinGecko (e.g., "bitcoin" instead of "btc").`);
+      }
+
+      const change = priceData.usd_24h_change?.toFixed(2) || 'N/A';
+      const marketCap = priceData.usd_market_cap ? `$${priceData.usd_market_cap.toLocaleString()}` : 'N/A';
+
+      return bot.sendMessage(
+        chatId,
+        `💰 *${arg.toUpperCase()}*\n\n` +
+        `💵 Price: $${priceData.usd}\n` +
+        `📈 24h Change: ${change}%\n` +
+        `📊 Market Cap: ${marketCap}`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    /* TRENDING */
+    if (command === '/trending') {
+      bot.sendChatAction(chatId, 'typing');
+
+      const trending = await fetchTrendingCoins();
+
+      if (!trending.length) {
+        return bot.sendMessage(chatId, '❌ Unable to fetch trending coins right now.');
+      }
+
+      const ui = trending.map(coin =>
+        `🔥 *${coin.name}* ($${coin.symbol})\n` +
+        `📊 Rank: #${coin.marketCapRank} | 💰 $${coin.price}\n` +
+        `📈 24h Change: ${coin.change24h.toFixed(2)}%\n` +
+        `🔗 [CoinGecko](https://www.coingecko.com/en/coins/${coin.coingeckoId})`
+      ).join('\n\n');
+
+      return bot.sendMessage(chatId, `🚀 *Trending Coins on CoinGecko*\n\n${ui}`, { parse_mode: 'Markdown' });
+    }
+
+    /* ALERT */
+    if (command === '/alert') {
+      // Simple alert command, perhaps set alert for new projects
+      return bot.sendMessage(chatId, '🚨 Alert feature coming soon! Use /strategy for market insights.');
     }
 
     /* STRATEGY */
